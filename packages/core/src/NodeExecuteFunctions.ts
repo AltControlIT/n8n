@@ -108,6 +108,7 @@ import type {
 	AiEvent,
 	ISupplyDataFunctions,
 	WebhookType,
+	SchedulingFunctions,
 } from 'n8n-workflow';
 import {
 	NodeConnectionType,
@@ -172,6 +173,7 @@ import {
 	TriggerContext,
 	WebhookContext,
 } from './node-execution-context';
+import { ScheduledTaskManager } from './ScheduledTaskManager';
 import { getSecretsProxy } from './Secrets';
 import { SSHClientsManager } from './SSHClientsManager';
 
@@ -915,6 +917,10 @@ function convertN8nRequestToAxios(n8nRequest: IHttpRequestOptions): AxiosRequest
 	} as AxiosRequestConfig;
 
 	axiosRequest.params = n8nRequest.qs;
+
+	if (n8nRequest.abortSignal) {
+		axiosRequest.signal = n8nRequest.abortSignal;
+	}
 
 	if (n8nRequest.baseURL !== undefined) {
 		axiosRequest.baseURL = n8nRequest.baseURL;
@@ -1715,6 +1721,11 @@ export async function httpRequestWithAuthentication(
 	additionalCredentialOptions?: IAdditionalCredentialOptions,
 ) {
 	removeEmptyBody(requestOptions);
+
+	// Cancel this request on execution cancellation
+	if ('getExecutionCancelSignal' in this) {
+		requestOptions.abortSignal = this.getExecutionCancelSignal();
+	}
 
 	let credentialsDecrypted: ICredentialDataDecryptedObject | undefined;
 	try {
@@ -3023,7 +3034,7 @@ const executionCancellationFunctions = (
 	},
 });
 
-const getRequestHelperFunctions = (
+export const getRequestHelperFunctions = (
 	workflow: Workflow,
 	node: INode,
 	additionalData: IWorkflowExecuteAdditionalData,
@@ -3343,10 +3354,18 @@ const getRequestHelperFunctions = (
 	};
 };
 
-const getSSHTunnelFunctions = (): SSHTunnelFunctions => ({
+export const getSSHTunnelFunctions = (): SSHTunnelFunctions => ({
 	getSSHClient: async (credentials) =>
 		await Container.get(SSHClientsManager).getClient(credentials),
 });
+
+export const getSchedulingFunctions = (workflow: Workflow): SchedulingFunctions => {
+	const scheduledTaskManager = Container.get(ScheduledTaskManager);
+	return {
+		registerCron: (cronExpression, onTick) =>
+			scheduledTaskManager.registerCron(workflow, cronExpression, onTick),
+	};
+};
 
 const getAllowedPaths = () => {
 	const restrictFileAccessTo = process.env[RESTRICT_FILE_ACCESS_TO];
@@ -3414,7 +3433,7 @@ export function isFilePathBlocked(filePath: string): boolean {
 	return false;
 }
 
-const getFileSystemHelperFunctions = (node: INode): FileSystemHelperFunctions => ({
+export const getFileSystemHelperFunctions = (node: INode): FileSystemHelperFunctions => ({
 	async createReadStream(filePath) {
 		try {
 			await fsAccess(filePath);
@@ -3450,7 +3469,7 @@ const getFileSystemHelperFunctions = (node: INode): FileSystemHelperFunctions =>
 	},
 });
 
-const getNodeHelperFunctions = (
+export const getNodeHelperFunctions = (
 	{ executionId }: IWorkflowExecuteAdditionalData,
 	workflowId: string,
 ): NodeHelperFunctions => ({
@@ -3458,7 +3477,7 @@ const getNodeHelperFunctions = (
 		await copyBinaryFile(workflowId, executionId!, filePath, fileName, mimeType),
 });
 
-const getBinaryHelperFunctions = (
+export const getBinaryHelperFunctions = (
 	{ executionId }: IWorkflowExecuteAdditionalData,
 	workflowId: string,
 ): BinaryHelperFunctions => ({
@@ -3476,7 +3495,7 @@ const getBinaryHelperFunctions = (
 	},
 });
 
-const getCheckProcessedHelperFunctions = (
+export const getCheckProcessedHelperFunctions = (
 	workflow: Workflow,
 	node: INode,
 ): DeduplicationHelperFunctions => ({
