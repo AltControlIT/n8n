@@ -1,6 +1,6 @@
 import { Service } from 'typedi';
 
-import type { TestDefinition } from '@/databases/entities/test-definition.ee';
+import type { MockedNodeItem, TestDefinition } from '@/databases/entities/test-definition.ee';
 import { AnnotationTagRepository } from '@/databases/repositories/annotation-tag.repository.ee';
 import { TestDefinitionRepository } from '@/databases/repositories/test-definition.repository.ee';
 import { BadRequestError } from '@/errors/response-errors/bad-request.error';
@@ -10,7 +10,7 @@ import type { ListQuery } from '@/requests';
 
 type TestDefinitionLike = Omit<
 	Partial<TestDefinition>,
-	'workflow' | 'evaluationWorkflow' | 'annotationTag'
+	'workflow' | 'evaluationWorkflow' | 'annotationTag' | 'metrics'
 > & {
 	workflow?: { id: string };
 	evaluationWorkflow?: { id: string };
@@ -26,10 +26,12 @@ export class TestDefinitionService {
 
 	private toEntityLike(attrs: {
 		name?: string;
+		description?: string;
 		workflowId?: string;
 		evaluationWorkflowId?: string;
 		annotationTagId?: string;
-		id?: number;
+		id?: string;
+		mockedNodes?: MockedNodeItem[];
 	}) {
 		const entity: TestDefinitionLike = {};
 
@@ -39,6 +41,10 @@ export class TestDefinitionService {
 
 		if (attrs.name) {
 			entity.name = attrs.name?.trim();
+		}
+
+		if (attrs.description) {
+			entity.description = attrs.description.trim();
 		}
 
 		if (attrs.workflowId) {
@@ -59,6 +65,10 @@ export class TestDefinitionService {
 			};
 		}
 
+		if (attrs.mockedNodes) {
+			entity.mockedNodes = attrs.mockedNodes;
+		}
+
 		return entity;
 	}
 
@@ -67,13 +77,13 @@ export class TestDefinitionService {
 		workflowId?: string;
 		evaluationWorkflowId?: string;
 		annotationTagId?: string;
-		id?: number;
+		id?: string;
 	}) {
 		const entity = this.toEntityLike(attrs);
 		return this.testDefinitionRepository.create(entity);
 	}
 
-	async findOne(id: number, accessibleWorkflowIds: string[]) {
+	async findOne(id: string, accessibleWorkflowIds: string[]) {
 		return await this.testDefinitionRepository.getOne(id, accessibleWorkflowIds);
 	}
 
@@ -83,7 +93,7 @@ export class TestDefinitionService {
 		return await this.testDefinitionRepository.save(test);
 	}
 
-	async update(id: number, attrs: TestDefinitionLike) {
+	async update(id: string, attrs: TestDefinitionLike) {
 		if (attrs.name) {
 			const updatedTest = this.toEntity(attrs);
 			await validateEntity(updatedTest);
@@ -102,6 +112,24 @@ export class TestDefinitionService {
 			}
 		}
 
+		// If there are mocked nodes, validate them
+		if (attrs.mockedNodes && attrs.mockedNodes.length > 0) {
+			const existingTestDefinition = await this.testDefinitionRepository.findOneOrFail({
+				where: {
+					id,
+				},
+				relations: ['workflow'],
+			});
+
+			const existingNodeNames = new Set(existingTestDefinition.workflow.nodes.map((n) => n.name));
+
+			attrs.mockedNodes.forEach((node) => {
+				if (!existingNodeNames.has(node.name)) {
+					throw new BadRequestError(`Pinned node not found in the workflow: ${node.name}`);
+				}
+			});
+		}
+
 		// Update the test definition
 		const queryResult = await this.testDefinitionRepository.update(id, this.toEntityLike(attrs));
 
@@ -110,7 +138,7 @@ export class TestDefinitionService {
 		}
 	}
 
-	async delete(id: number, accessibleWorkflowIds: string[]) {
+	async delete(id: string, accessibleWorkflowIds: string[]) {
 		const deleteResult = await this.testDefinitionRepository.deleteById(id, accessibleWorkflowIds);
 
 		if (deleteResult.affected === 0) {
